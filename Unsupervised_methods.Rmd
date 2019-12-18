@@ -1,0 +1,155 @@
+---
+title: "Unsupervised_Learning"
+author: "Alisha Gumber"
+date: "11/25/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(ggfortify)
+library(glmnet)
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(FactoMineR)
+library(fastICA)
+```
+
+
+
+```{r}
+HCV_bin <- read_csv("/Users/alishagumber/Desktop/Machine\ Learning/Hep_C_dataset/HCV-Egy-Data.csv")
+```
+
+```{r}
+# filter dataset for variables I will be using (drop columns 17-27).
+HCV_bin <- HCV_bin[-c(17:28)]
+```
+
+1 = yes, 2 = no
+1 = male, 2 = f
+convert to binary (1 and 0)
+Now 1 = yes, 0 = no
+male = 1, female = 1
+```{r}
+HCV_bin$Fever <- ifelse(HCV_bin$Fever == 2, 0, 1)
+HCV_bin$Gender <- ifelse(HCV_bin$Gender == 2, 1, 0)
+HCV_bin$`Nausea/Vomting` <- ifelse(HCV_bin$`Nausea/Vomting` == 2, 0, 1)
+HCV_bin$Headache <- ifelse(HCV_bin$Headache == 2, 0, 1)
+HCV_bin$Diarrhea <- ifelse(HCV_bin$Diarrhea == 2, 0, 1)
+HCV_bin$`Fatigue & generalized bone ache` <- ifelse(HCV_bin$`Fatigue & generalized bone ache` == 2, 0, 1)
+HCV_bin$Jaundice <- ifelse(HCV_bin$Jaundice == 2, 0, 1)
+HCV_bin$`Epigastric pain` <- ifelse(HCV_bin$`Epigastric pain` == 2, 0, 1)
+
+#View(HCV_bin)
+```
+
+
+Since many models work best with binary responses, i'm converting the histological stage into a binary response, with either a diagnosis of severe (stages 3 and 4) or not severe (stage 1 and 2)
+```{r}
+# convert histological stage to binary response
+Severe = ifelse(HCV_bin$`Baselinehistological staging`>=3, "Severe", "Not_Severe")
+HCV = data.frame(HCV_bin, Severe)
+
+head(HCV)
+```
+ 
+
+Since all the numeric variables are on different scales, I will scale the data
+```{r}
+HCV[1:16] <- lapply(HCV[1:16], function(x) c(scale(x, center = TRUE, scale = TRUE)))
+```
+
+
+```{r}
+# rename some columns for easier analysis
+colnames(HCV)[colnames(HCV)=="Fatigue...generalized.bone.ache"] <- "fatigue_and_bodyache"
+colnames(HCV)[colnames(HCV)=="Epigastric.pain"] <- "epigastric_pain"
+colnames(HCV)[colnames(HCV)=="Baselinehistological.staging" ] <- "histological_stage"
+colnames(HCV)[colnames(HCV)=="AST.1" ] <- "AST_1"
+colnames(HCV)[colnames(HCV)=="ALT.1" ] <- "ALT_1"
+colnames(HCV)[colnames(HCV)=="Nausea.Vomting" ] <- "nausea_vomiting"
+```
+
+
+# ICA
+
+From looking at my variable distributions, this data does not seem to have a normal (Gaussian) distribution, so I will first try ICA as my method of unsupervised learning.
+
+Create a matrix S with the independent components
+```{r}
+#create two signals
+S <- cbind(cos((1:500)/10), ((500:1)/1000))
+
+par(mfcol = c(1, 2))
+plot(S[,1], type="l")
+plot(S[,2], type="l")
+```
+
+Create a mixing matrix A
+```{r}
+A <- matrix(c(0.5, 0.7, 0.423, 0.857), 2, 2)
+```
+
+Mix S using A
+```{r}
+X <- S %*% A
+par(mfcol = c(1, 2))
+plot(X[,1], type="l")
+plot(X[,2], type="l")
+
+```
+
+```{r}
+ica <- fastICA((HCV[1:16]), 4, alg.typ = "parallel", fun = "logcosh", alpha = 1,
+             method = "R", row.norm = FALSE, maxit = 200,
+             tol = 0.0001, verbose = TRUE)
+
+heatmap(ica$S)
+
+ica2 <- fastICA((HCV[1:16]), 2, alg.typ = "parallel", fun = "logcosh", alpha = 1,
+             method = "R", row.norm = FALSE, maxit = 200,
+             tol = 0.0001, verbose = TRUE)
+
+heatmap(ica2$S)
+```
+
+
+# PCA
+
+Since ICA didn't tell me much about the data, i'll try PCA as well just to see if it produces any useful information about potential clusters. Since the distribution of the variables were non-Gaussian, I do not expect this to produce very useful information.
+
+```{r}
+# PCA
+autoplot(prcomp(HCV[1:16]))
+```
+
+According the PCA plot, PC1 account 7.49% of the variance, and PC2 account for 7.27% of the variance. Just from looking at the plot, there don't seem to be any identifiable clusters. 
+
+```{r}
+# I will use silhouette anaylsis to determine the optimal number of clusters for the k-means clustering method.
+sil <- fviz_nbclust((HCV[1:16]), kmeans, method='silhouette')
+sil
+```
+
+
+```{r}
+# The silhouette analysis determine that 2 clusters are optimal, which seems good since I split the dataset into patients who have 'Severe' and 'Not Severe' liver fibrosis.
+# K-means clustering:
+
+kmeans_clust <- kmeans(HCV[1:16], 2)
+str(kmeans_clust)
+
+# color PCA plot according to clusters from k-means analysis:
+a <- autoplot(prcomp(HCV[1:16]), data = HCV[1:16], colour = kmeans_clust$cluster)
+a
+```
+
+

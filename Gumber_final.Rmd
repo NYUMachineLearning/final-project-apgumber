@@ -1,0 +1,326 @@
+---
+title: "Cleaning data, variable distribution, and feature selection"
+author: "Alisha Gumber"
+date: "10/6/2019"
+output: html_document
+---
+
+## Predict stage of liver disease in Egyptian Hepatitis C patients using non-invasive strategies.
+
+Diagnosis of liver disease requires taking a biopsy of the liver, which is an invasive procedure where a needle is inserted into a patient's liver to collect a tissue sample. I am using the Hepatitis C dataset from the UCI Machine Learning Repository to predict the stage of liver fibrosis in Egyptian patients with Hepatitis C. The stages are measured by an F scale of F1-F4, corresponding to portal fibrosis, few septa, many septa, and cirrhosis. I want to see if it's possible to predict severe (F3 and F4) or not severe (F1 and F2) liver disease stage using only a patient's clinical data. The dataset contains basic demographic information, symptoms, blood panel results and RNA sequencing information. Since I want to use information that could be collected non-invasively, I will just be using the patients clinical data such as, demographic, symptomatic, and blood panel information as predictors.
+Originally there were 1,385 patient entries and 28 predictors. I did not want to impute missing data, so I decided to remove variables with a lot of missing data. After removing variables with a lot of missing data, (indicated with a 5), non-baseline information (4, 12, 24, 36, and 48 weeks ALS scores), and non-clinical data, I am left with 1,385 patients and 16 predictors.
+Predictors: Age, Gender, BMI, Fever, Nausea/Vomiting, Headache, Diarrhea, Fatigue/Body Ache, Jaundice, Epigastric pain, White blood cell count, red blood cell count, hemoglobin, platelet count, AST count (aspartate transaminase), and ALT (alanine transaminase).
+Predict: baseline histological stage 1-4 (not severe/severe).
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load necessary packages
+
+```{r, include=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(ggfortify)
+library(glmnet)
+library(tidyverse)
+library(cluster)
+library(corrplot)
+library(caret)
+library(ggpubr)
+```
+
+
+Import csv file with data
+
+```{r}
+HCV_data <- read_csv("/Users/alishagumber/Desktop/Machine\ Learning/Hep_C_dataset/HCV-Egy-Data.csv")
+```
+
+```{r}
+View(HCV_data)
+```
+
+
+## Cleaning the data and feature selection
+
+```{r}
+# filter dataset for all variables I will be using (drop columns 17-27)
+HCV_data <- HCV_data[-c(17:28)]
+```
+
+```{r}
+# check for missing data
+sum(is.na(HCV_data))
+```
+
+```{r}
+# rename some columns for easier analysis
+colnames(HCV_data)[colnames(HCV_data)=="Fatigue & generalized bone ache"] <- "fatigue_and_bodyache"
+colnames(HCV_data)[colnames(HCV_data)=="Epigastric pain"] <- "epigastric_pain"
+colnames(HCV_data)[colnames(HCV_data)=="Baselinehistological staging" ] <- "baseline_histological_stage"
+colnames(HCV_data)[colnames(HCV_data)=="AST 1" ] <- "AST_1"
+colnames(HCV_data)[colnames(HCV_data)=="ALT 1" ] <- "ALT_1"
+colnames(HCV_data)[colnames(HCV_data)=="Nausea/Vomting" ] <- "nausea_vomiting"
+```
+ 
+ 
+Since many models work best with binary responses, i'm converting the histological stage into a classification binary response, with either a diagnosis of severe (stages 3 and 4) or not severe (stage 1 and 2)
+
+```{r}
+# convert histological stage to binary response
+Severe = ifelse(HCV_data$baseline_histological_stage>=3, "Severe", "Not Severe")
+HCV_data = data.frame(HCV_data, Severe)
+
+head(HCV_data)
+```
+ 
+ 
+ 
+```{r}
+# convert categorical data (male/female and yes/no) to factors for better visualization of distribution. They are currently numeric
+
+HCV_data[HCV_data$Gender == 1,]$Gender <- "M"
+HCV_data[HCV_data$Gender == 2,]$Gender <- "F"
+HCV_data$Gender <- as.factor(HCV_data$Gender)
+
+HCV_data[HCV_data$Fever == 1,]$Fever <- "Yes"
+HCV_data[HCV_data$Fever == 2,]$Fever <- "No"
+HCV_data$Fever <- as.factor(HCV_data$Fever)
+
+HCV_data[HCV_data$nausea_vomiting == 1,]$nausea_vomiting <- "Yes"
+HCV_data[HCV_data$nausea_vomiting == 2,]$nausea_vomiting <- "No"
+HCV_data$nausea_vomiting <- as.factor(HCV_data$nausea_vomiting)
+
+HCV_data[HCV_data$Headache == 1,]$Headache <- "Yes"
+HCV_data[HCV_data$Headache == 2,]$Headache <- "No"
+HCV_data$Headache <- as.factor(HCV_data$Headache)
+
+HCV_data[HCV_data$Diarrhea == 1,]$Diarrhea <- "Yes"
+HCV_data[HCV_data$Diarrhea == 2,]$Diarrhea <- "No"
+HCV_data$Diarrhea <- as.factor(HCV_data$Diarrhea)
+
+HCV_data[HCV_data$fatigue_and_bodyache == 1,]$fatigue_and_bodyache <- "Yes"
+HCV_data[HCV_data$fatigue_and_bodyache == 2,]$fatigue_and_bodyache <- "No"
+HCV_data$fatigue_and_bodyache <- as.factor(HCV_data$fatigue_and_bodyache)
+
+HCV_data[HCV_data$Jaundice == 1,]$Jaundice <- "Yes"
+HCV_data[HCV_data$Jaundice == 2,]$Jaundice <- "No"
+HCV_data$Jaundice <- as.factor(HCV_data$Jaundice)
+
+HCV_data[HCV_data$epigastric_pain == 1,]$epigastric_pain <- "Yes"
+HCV_data[HCV_data$epigastric_pain == 2,]$epigastric_pain <- "No"
+HCV_data$epigastric_pain <- as.factor(HCV_data$epigastric_pain)
+
+str(HCV_data)
+```
+
+Categorical Variables: Gender, Fever, Nausea/Vomiting, Headache, Diarrhea, fatigue_and_bodyache, Jaundice, epigastric pain, baseline histological grade, and baseline_histological stage
+
+Continous Variables: Age, BMI, WBC, RBC, HGB, Plat, AST, and ALT
+
+## Look at distribution of variables
+
+```{r}
+# convert fibrosis stage to categorial value so I can color them accordingly
+HCV_data$baseline_histological_stage <- as.factor(HCV_data$baseline_histological_stage)
+```
+
+## Categorical variables: 
+
+Number of patients in dataset with each stage of liver fibrosis (F1-F4)
+```{r}
+# plot number of patients at each stage of fibrosis in barplot
+ggplot(data = HCV_data) + ggtitle("Distribution of fibrosis stage") +
+  geom_bar(mapping = aes(x = baseline_histological_stage, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+# distribution of severe/not severe
+ggplot(data = HCV_data) + ggtitle("Distribution of Severe/Not Severe Fibrosis") +
+  geom_bar(mapping = aes(x = Severe, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Gender distribution
+```{r}
+# About the same number of men and women in study, a little more men 
+ggplot(data = HCV_data) + ggtitle("Gender distribution in Hep. C patients") +
+  stat_count(mapping = aes(x = Gender, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+# gender distribution of severe/not severe
+ggplot(data = HCV_data) + ggtitle("Gender distribution") +
+  stat_count(mapping = aes(x = Gender, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients who developed fevers:
+```{r}
+# more patients did not develop a fever, but more stage 4 patients did develop of fever
+ggplot(data = HCV_data) + ggtitle("Hep. C patients who developed fevers") +
+  stat_count(mapping = aes(x = Fever, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+# barplot distribution of patients who developed fevers by severity of fibrosis
+ggplot(data = HCV_data) + ggtitle("Fever distribution by severity") +
+  stat_count(mapping = aes(x = Fever, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients who had headaches
+```{r}
+ggplot(data = HCV_data) + ggtitle("Hep. C patients who had headaches") +
+  stat_count(mapping = aes(x = Headache, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+ggplot(data = HCV_data) + ggtitle("Headache distribution by severity") +
+  stat_count(mapping = aes(x = Headache, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients who experienced diarrhea
+```{r}
+ggplot(data = HCV_data) + ggtitle("Hep. C patients who had diarrhea") +
+  stat_count(mapping = aes(x = Diarrhea, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+ggplot(data = HCV_data) + ggtitle("Patients experiencing diarrhea by severity") +
+  stat_count(mapping = aes(x = Diarrhea, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients who experienced fatigue and bodyaches
+```{r}
+ggplot(data = HCV_data) + ggtitle("Hep. C patients who experienced fatigue and bodyaches") +
+  stat_count(mapping = aes(x = fatigue_and_bodyache, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+ggplot(data = HCV_data) + ggtitle("Patients who experienced fatigue and bodyaches by severity") +
+  stat_count(mapping = aes(x = fatigue_and_bodyache, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients who developed Jaundice
+```{r}
+# a little more stage 4 patients did not develop jaundice and more stage 1 patients did
+ggplot(data = HCV_data) + ggtitle("Hep. C patients who developed Jaundice") +
+  stat_count(mapping = aes(x = Jaundice, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+ggplot(data = HCV_data) + ggtitle("Patients who developed Jaundice by severity") +
+  stat_count(mapping = aes(x = Jaundice, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+Patients with epigastric pain
+```{r}
+# slightly more stage 3 and 4 patients with epigastric pain
+ggplot(data = HCV_data) + ggtitle("Hep. C patients with epigastric pain") +
+  stat_count(mapping = aes(x = epigastric_pain, fill = baseline_histological_stage)) +
+  scale_fill_brewer()
+
+ggplot(data = HCV_data) + ggtitle("Patients who experienced epigastric pain by severity") +
+  stat_count(mapping = aes(x = epigastric_pain, fill = Severe)) +
+  scale_fill_manual(values=c("#99CCFF", "#990000"))
+```
+
+## Numerical variables:
+
+Distribution of Age
+```{r}
+age <- ggplot(data = HCV_data, aes(x = Age, fill = baseline_histological_stage)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 30) +
+  scale_fill_brewer()
+```
+
+Distribution of BMI
+```{r}
+bmi <- ggplot(data = HCV_data, aes(x = BMI, fill = baseline_histological_stage)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 30) +
+  scale_fill_brewer()
+```
+
+Distribution of patients WBC
+```{r}
+# look at distribution of white blood cell count, color by stage of fibrosis
+# patients with cirhosis have lower WBC. Normal considered 4,500-11,000
+wbc_count <- ggplot(data = HCV_data, aes(x = WBC, fill = baseline_histological_stage)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 30) +
+  scale_fill_brewer()
+```
+
+Hemoglobin (HGB) levels:
+```{r}
+# normal HGB levels for women: 12.0-15.5, normal for men: 13.5-17.5
+# low HGB levels sometimes occur in patients with hep. c
+hgb <- ggplot(data = HCV_data, aes(x = HGB, fill = baseline_histological_stage)) + 
+  geom_histogram(alpha=0.5, bins= 25) +
+  scale_fill_brewer()
+```
+
+AST (aspartate aminotransferase) levels
+```{r}
+ast <- ggplot(data = HCV_data, aes(x = AST_1, fill = baseline_histological_stage)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 30) +
+  scale_fill_brewer()
+```
+
+ALT (alanine aminotransferase) levels
+```{r}
+alt <- ggplot(data = HCV_data, aes(x = ALT_1, fill = baseline_histological_stage)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 30) +
+  scale_fill_brewer()
+```
+
+
+View distribution of continous variables
+```{r}
+grid.arrange(age, bmi, wbc_count, hgb, ast, alt)
+```
+
+**The variables are not normally distributed.**
+
+## Run Shapiro-Wilk's test to check for normality among variables.
+
+```{r}
+## qqplots draw correlation between a given sample and a normal distribution
+age_qq <- ggqqplot(HCV_data$Age, ylab = "Sample (Age)")
+wbc_qq <- ggqqplot(HCV_data$WBC, ylab = "Sample (WBC)")
+ast_qq <- ggqqplot(HCV_data$AST_1, ylab = "Sample (AST)")
+bmi_qq <- ggqqplot(HCV_data$BMI, ylab = "Sample (BMI)")
+hgb_qq <- ggqqplot(HCV_data$HGB, ylab = "Sample (HGB)")
+alt_qq <- ggqqplot(HCV_data$ALT_1, ylab = "Sample (ALT)")
+
+grid.arrange(age_qq, wbc_qq, ast_qq, hgb_qq, bmi_qq, alt_qq)
+```
+
+
+```{r}
+# Run Shapiro-Wilk's test to test for normalist among variables
+shapiro.test(HCV_data$Age)
+shapiro.test(HCV_data$WBC)
+shapiro.test(HCV_data$AST_1)
+shapiro.test(HCV_data$BMI)
+shapiro.test(HCV_data$HGB)
+shapiro.test(HCV_data$ALT_1)
+
+# From the output, the p-value < 0.05 implying that the distribution of the data is significantly different from normal distribution. We cannot assume normality.
+```
+
+
+## Feature Selection with backward elimination
+
+```{r}
+# backward elimination
+# convert factors in diabetes column to numeric
+HCV_data$Severe <- ifelse(HCV_data$Severe  == "Severe", 1 , 2)
+HCV_data$Severe <- as.numeric(as.character(HCV_data$Severe))
+
+model_back_el <- lm(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1, data = HCV_data)
+summary(model_back_el)
+step(model_back_el, direction = "backward")
+```
+
+**Backward elimination starts with all predictors in the model (full model), iteratively removes the least contributive predictors, and stops when you have a model where all predictors are statistically significant. The lower AIC, the better the model. According to this method and the AIC scores, one of the best models only contains features Age, Gender, BMI, nausea_vomiting, epigastric_pain, Plat, and ALT_1. When I do feature selection in my supervised learning models, these are the features I will use.**

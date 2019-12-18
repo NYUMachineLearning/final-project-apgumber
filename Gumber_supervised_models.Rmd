@@ -1,0 +1,380 @@
+---
+title: "Supervised learning classification models"
+author: "Alisha Gumber"
+date: "11/23/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(caret)
+library(ROCR)
+library(pROC)
+library(MASS)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(ggfortify)
+library(glmnet)
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(randomForest)
+library(FactoMineR)
+library(tree)
+library(ISLR)
+library(lda)
+```
+
+```{r}
+HCV_bin <- read_csv("/Users/alishagumber/Desktop/Machine\ Learning/Hep_C_dataset/HCV-Egy-Data.csv")
+```
+
+```{r}
+# filter dataset for all variables I will be using (drop columns 17-27)
+HCV_bin <- HCV_bin[-c(17:28)]
+```
+
+1 = yes, 2 = no
+1 = male, 2 = f
+convert to binary (1 and 0)
+Now 1 = yes, 0 = no
+male = 0, female = 1
+```{r}
+HCV_bin$Fever <- ifelse(HCV_bin$Fever == 2, 0, 1)
+HCV_bin$Gender <- ifelse(HCV_bin$Gender == 2, 1, 0)
+HCV_bin$`Nausea/Vomting` <- ifelse(HCV_bin$`Nausea/Vomting` == 2, 0, 1)
+HCV_bin$Headache <- ifelse(HCV_bin$Headache == 2, 0, 1)
+HCV_bin$Diarrhea <- ifelse(HCV_bin$Diarrhea == 2, 0, 1)
+HCV_bin$`Fatigue & generalized bone ache` <- ifelse(HCV_bin$`Fatigue & generalized bone ache` == 2, 0, 1)
+HCV_bin$Jaundice <- ifelse(HCV_bin$Jaundice == 2, 0, 1)
+HCV_bin$`Epigastric pain` <- ifelse(HCV_bin$`Epigastric pain` == 2, 0, 1)
+
+#View(HCV_bin)
+```
+
+
+Since many models work best with binary responses, i'm converting the histological stage into a binary response, with either a diagnosis of severe (stages 3 and 4) or not severe (stage 1 and 2)
+```{r}
+# convert histological stage to binary response
+Severe = ifelse(HCV_bin$`Baselinehistological staging`>=3, "Severe", "Not_Severe")
+HCV = data.frame(HCV_bin, Severe)
+
+head(HCV)
+```
+ 
+
+Since all the numeric variables are on different scales, I will scale the data
+```{r}
+HCV[1:16] <- lapply(HCV[1:16], function(x) c(scale(x)))
+```
+
+
+```{r}
+# rename some columns for easier analysis
+colnames(HCV)[colnames(HCV)=="Fatigue...generalized.bone.ache"] <- "fatigue_and_bodyache"
+colnames(HCV)[colnames(HCV)=="Epigastric.pain"] <- "epigastric_pain"
+colnames(HCV)[colnames(HCV)=="Baselinehistological.staging" ] <- "histological_stage"
+colnames(HCV)[colnames(HCV)=="AST.1" ] <- "AST_1"
+colnames(HCV)[colnames(HCV)=="ALT.1" ] <- "ALT_1"
+colnames(HCV)[colnames(HCV)=="Nausea.Vomting" ] <- "nausea_vomiting"
+```
+
+
+
+## Supervised Learning Models
+
+I will be trying a few different classification models to see which has the best outcome on this dataset. The models i'll be using include, Support Vector Machine, Logistic Regression, Random Forest, and Naive Bayes. I will not be trying linear discriminant analysis. LDA is known to be used for well separated classes, and good for more than 2 response classes. It also assumes a normal distribution with a class specific mean and common variance, which does not apply to my dataset.
+I will first use all the features to train the model, create a Receiver Opterating Characteristic (ROC) curve and find the Area Under the Curve (AUC). I will then predict on the test set and check the accuracy. Then, I'm going to remove some of the variables based on my backward elimination feature selection, and compare results to see if feature selection improved the model's accuracy.
+
+
+## Support Vector Machine
+
+```{r}
+# set seed for reproducibility 
+set.seed(30)
+
+# split data into training and testing (75/25)
+train <- floor(0.75 * nrow(HCV))
+train_pos <- sample(seq_len(nrow(HCV)), size = train)
+
+training_set <- HCV[train_pos,]
+testing_set <- HCV[-train_pos,]
+
+# look at dimensions of training/testing set
+dim(training_set) # 1038 observation in train set, with 18 variables
+dim(testing_set) # 347 observations in test set, with 18 variables
+```
+
+
+SVM linear kernel method:
+
+```{r}
+set.seed(30)
+control = trainControl(method = "repeatedcv", repeats = 5, classProbs = T, savePredictions = T)
+
+svm = train(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1,  data = training_set, method = "svmLinear", tuneLength = 10, trControl = control)
+
+# Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1
+svm
+```
+
+
+```{r}
+# Plot ROC curve with AUC results
+plot(x = roc(predictor = svm$pred$Severe, response = svm$pred$obs)$specificities, y = roc(predictor = svm$pred$Severe, response = svm$pred$obs)$sensitivities, col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity", xlab = "Specificity")
+
+legend("bottomright", legend = paste("Severe/Not Severe Fibrosis Stage --", 
+                                     roc(predictor = svm$pred$Severe,
+                                         response = svm$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+```
+
+
+Perform model on test set and make confusion matrix
+```{r}
+svm_test = predict(svm, newdata = testing_set)
+confusionMatrix(svm_test, reference = testing_set$Severe)
+```
+
+**Using an SVM model with a linear kernel, the AUC was ~0.51 and an accuracy of 0.4986 after performing the test data.**
+
+
+SVM with radial kernel method:
+
+```{r}
+set.seed(30)
+control = trainControl(method = "repeatedcv", repeats = 5, classProbs = T, savePredictions = T)
+
+svm_rad = train(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1,  data = training_set, method = "svmRadial", tuneLength = 10, trControl = control)
+
+svm_rad
+```
+
+
+```{r}
+# Plot ROC curve with AUC results
+plot(x = roc(predictor = svm_rad$pred$Severe, response = svm_rad$pred$obs)$specificities, y = roc(predictor = svm_rad$pred$Severe, response = svm_rad$pred$obs)$sensitivities, col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity", xlab = "Specificity")
+
+legend("bottomright", legend = paste("Severe/Not Severe Fibrosis Stage--", 
+                                     roc(predictor = svm_rad$pred$Severe,
+                                         response = svm_rad$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+```
+
+
+```{r}
+svm_test_rad = predict(svm_rad, newdata = testing_set)
+confusionMatrix(svm_test_rad, reference = testing_set$Severe)
+```
+
+**Using an SVM model with a radial kernel, the AUC was ~0.50 and an accuracy of 0.5101 after performing the test data.**
+
+
+
+SVM with feature selection:
+
+```{r}
+set.seed(30)
+control = trainControl(method = "repeatedcv", repeats = 5, classProbs = T, savePredictions = T)
+
+svm_feat = train(Severe ~ Age + Gender + BMI + nausea_vomiting + epigastric_pain + 
+    Plat + ALT_1,  data = training_set, method = "svmLinear", tuneLength = 10, trControl = control)
+
+svm_feat
+```
+
+
+```{r}
+# Plot ROC curve with AUC results
+plot(x = roc(predictor = svm_feat$pred$Severe, response = svm_feat$pred$obs)$specificities, y = roc(predictor = svm_feat$pred$Severe, response = svm_feat$pred$obs)$sensitivities, col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity", xlab = "Specificity")
+
+legend("bottomright", legend = paste("Severe/Not Severe Fibrosis Stage --", 
+                                     roc(predictor = svm_feat$pred$Severe,
+                                         response = svm_feat$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+
+svm_pred_feat = predict(svm_feat, newdata = testing_set)
+confusionMatrix(svm_pred_feat, reference = testing_set$Severe)
+```
+
+
+
+## Logistic Regression
+
+```{r}
+set.seed(30)
+ctrl <- trainControl(method = "repeatedcv", repeats = 15,classProbs = T,
+                     savePredictions = T)
+
+# create model - logistic regression is a bionomial general linear model. 
+logistic_regression <- train(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1, data = training_set, method = "glm", family= "binomial", trControl = ctrl)
+
+logistic_regression
+confusionMatrix(logistic_regression)
+```
+
+
+Visualize with ROC curve
+
+```{r}
+plot(x = roc(predictor = logistic_regression$pred$Severe,
+             response = logistic_regression$pred$obs)$specificities, 
+     y = roc(predictor = logistic_regression$pred$Severe, 
+             response = logistic_regression$pred$obs)$sensitivities,
+     col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity")
+legend("bottomright", legend = paste("Severe/Not Severe Fibrosis Stage --", 
+                                     roc(predictor = logistic_regression$pred$Severe,
+                                         response = logistic_regression$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+```
+
+**Logistic Regression with all features has an AUC of 0.52**
+
+Test on independent test set
+
+```{r}
+#predict iris species using Sepal legth
+log_reg_pred <- predict(logistic_regression, newdata = testing_set)
+
+#confusion matrix
+confusionMatrix(log_reg_pred, 
+                reference = testing_set$Severe)
+```
+
+**A logistic regression model for predicting severe or not severe liver fibrosis had an AUC of 0.52. The accuracy of the test set was 0.493.**
+
+
+Logistic Regression with feature selection
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 15,classProbs = T,
+                     savePredictions = T)
+
+# create model - logistic regression is a bionomial general linear model. 
+log_reg2 <- train(Severe ~ Age + Gender + BMI + nausea_vomiting + epigastric_pain + Plat + ALT_1, data = training_set, method = "glm", family= "binomial", trControl = ctrl)
+
+    
+log_reg2
+summary(log_reg2)
+
+plot(x = roc(predictor = log_reg2$pred$Severe,
+             response = log_reg2$pred$obs)$specificities, 
+     y = roc(predictor = log_reg2$pred$Severe, 
+             response = log_reg2$pred$obs)$sensitivities,
+     col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity")
+legend("bottomright", legend = paste("Severe/Not Severe Fibrosis Stage --", 
+                                     roc(predictor = log_reg2$pred$Severe,
+                                         response = log_reg2$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+
+# predict on test set
+log_reg_pred2 <- predict(log_reg2, newdata = testing_set)
+
+#confusion matrix
+confusionMatrix(log_reg_pred2, 
+                reference = testing_set$Severe)
+```
+
+**Logistic Regression with feature selection (only using 7 features) improved model to AUC of 0.54. and accuracy of 0.536 on independent test set.**
+
+
+## Random Forest
+
+```{r}
+# fit model on training set
+set.seed(123)
+model_rf <- train(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1, data = training_set, method = "rf", trControl = trainControl("cv", number = 10), importance = TRUE)
+
+model_rf$bestTune
+model_rf$finalModel
+```
+
+
+```{r}
+# make prediction on test data
+predicted_rf <- model_rf %>% predict(testing_set)
+head(predicted_rf)
+
+# compute model accuracy
+mean(predicted_rf == testing_set$Severe)
+
+# check variable importance
+importance(model_rf$finalModel)
+
+# random forest variable importance plot
+# Plot MeanDecreaseAccuracy
+varImpPlot(model_rf$finalModel, type = 1)
+# Plot MeanDecreaseGini
+varImpPlot(model_rf$finalModel, type = 2)
+
+varImp(model_rf)
+```
+
+**The accuracy of the random forest model was 0.48, with an out-of-bag error of 51.73%. According the the variable importance plot, the most important variables in the random forest model are epigastric pain, age, and nausea/vomiting.**
+
+
+## Naive Bayes Classification Model
+
+Naive Bayes model assumes all variables are independent of one another.
+
+```{r eval=TRUE, message=FALSE, warning= FALSE}
+set.seed(30)
+# 10-fold cross validation using trainControl function
+train_control <- trainControl(method = "cv", number = 10)
+
+# train naive bayes model
+nb <- train(Severe ~ Age + Gender + BMI + Fever + nausea_vomiting + Headache + Diarrhea + fatigue_and_bodyache + Jaundice + epigastric_pain + WBC + RBC + HGB + Plat + AST_1 + ALT_1, data = training_set, method = "nb", trControl = train_control)
+
+confusionMatrix(nb)
+```
+
+
+```{r eval=TRUE, message=FALSE, warning= FALSE}
+# predict on test set
+nb_pred <- predict(nb, newdata = testing_set)
+
+# confusion matrix
+confusionMatrix(nb_pred, reference = testing_set$Severe)
+
+y <- varImp(nb)
+plot(y)
+```
+
+
+Naive Bayes with feature selection
+
+```{r eval=TRUE, message=FALSE, warning= FALSE}
+set.seed(30)
+# train model with feature selection and 10-fold cross validation
+nb2 <- train(Severe ~ Age + Gender + BMI + nausea_vomiting + epigastric_pain + 
+    Plat + ALT_1, data = training_set, method = "nb", trControl = train_control)
+
+confusionMatrix(nb2)
+
+# predict on test set
+nb_pred2 <- predict(nb2, newdata = testing_set)
+
+# confusion matrix
+confusionMatrix(nb_pred2, testing_set$Severe)
+
+
+```
+
+**The NB model improved from an accuracy of 0.48 on testing data, to 0.55 with feature selection.**
+
+
+**Conclusion:**
+None of the models performed very well on this data set. The models that performed the best were logistic regression and naive bayes, with an accuracy of 0.54 and 0.55, respectively. Both of the models improved with feature selection, with the final models having 7 variables as predictors. An accuracy of 0.5 or below means the model's predictions are due to random chance, which is not the case here. From some of the papers that I read about predicting severe iver disease using non-invasive methods, it is possible to do. It could just be the variables in this dataset were not very good predictors.
+
+
+References:
+1. Peleg N, Sneh Arbib O, Issachar A, Cohen-Naftaly M, Braun M, Shlomai A. Noninvasive scoring systems predict hepatic and extra-hepatic cancers in patients with nonalcoholic fatty liver disease. PLoS One. 2018;13(8):e0202393. Published 2018 Aug 14. doi:10.1371/journal.pone.0202393
+
+2. Castera, L. Noninvasive Methods to Assess Liver Disease in Patients With Hepatitis B or C. Gastroenterology. 2012;142(6):1293–1302.
+
